@@ -29,10 +29,6 @@ _LOGGER = logging.getLogger(__name__)
 
 VOD_SPLIT_TIME = dt.timedelta(minutes=5)
 
-# Start streamed playback slightly before the requested moment, so whatever set the
-# alarm off is on screen from the first frame instead of already halfway through.
-VOD_PRE_ROLL = dt.timedelta(seconds=8)
-
 
 async def async_get_media_source(hass: HomeAssistant) -> ReolinkVODMediaSource:
     """Set up camera media source."""
@@ -119,8 +115,7 @@ class ReolinkVODMediaSource(MediaSource):
             segment_start = dt.datetime.strptime(start_time, "%Y%m%d%H%M%S").replace(
                 tzinfo=dt_util.DEFAULT_TIME_ZONE
             )
-            offset = segment_start - file_start - VOD_PRE_ROLL
-            seek = max(0, int(offset.total_seconds()))
+            seek = max(0, int((segment_start - file_start).total_seconds()))
         except ValueError:
             # Some devices name recordings instead of timestamping them; play from the start.
             _LOGGER.debug("Could not derive a seek offset from '%s'", filename)
