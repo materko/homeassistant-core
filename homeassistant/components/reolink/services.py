@@ -1,6 +1,10 @@
 """Reolink additional services."""
 
+import asyncio
 from datetime import datetime, timedelta
+from functools import partial
+import logging
+import os
 from urllib.parse import quote
 
 from reolink_aio.api import Chime
@@ -19,7 +23,7 @@ from homeassistant.core import (
     SupportsResponse,
     callback,
 )
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import (
     config_validation as cv,
     device_registry as dr,
@@ -52,6 +56,12 @@ SERVICE_VOD_DOWNLOAD = "vod_download"
 # stored in blocks of roughly an hour, so a few hours of margin finds the block
 # without dragging in a needlessly large search.
 VOD_SEARCH_MARGIN = timedelta(hours=4)
+
+# How long past the length of a clip to wait before giving up on ffmpeg. A recorder
+# usually delivers stored footage faster than real time, so this is slack, not budget.
+FFMPEG_GRACE = 60
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @raise_translated_error
@@ -207,7 +217,8 @@ async def _async_vod_download(service_call: ServiceCall) -> ServiceResponse:
 
     Pulls the footage straight off the recorder rather than off the live stream, so
     the clip can start before the moment that triggered it without Home Assistant
-    having to keep a preloaded stream running.
+    having to keep a preloaded stream running. The clip is "duration" long in total
+    and "pre_roll" of that sits before the moment.
     """
     device, _config_entry, host, channel, moment, recording = (
         await _async_locate_recording(service_call, SERVICE_VOD_DOWNLOAD)
@@ -232,20 +243,59 @@ async def _async_vod_download(service_call: ServiceCall) -> ServiceResponse:
         channel, filename, stream_res, vod_type, seek
     )
 
-    # Imported here so that setting up the integration does not pull in the stream
-    # stack, which only this service needs.
-    from homeassistant.components.camera import (  # noqa: PLC0415
-        DynamicStreamSettings,
-    )
-    from homeassistant.components.stream import create_stream  # noqa: PLC0415
+    hass = service_call.hass
+    if not hass.config.is_allowed_path(video_path):
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="service_path_not_allowed",
+            translation_placeholders={"path": video_path},
+        )
 
-    stream = create_stream(service_call.hass, url, {}, DynamicStreamSettings())
+    # Imported here so that setting up the integration does not pull in ffmpeg,
+    # which only this service needs.
+    from homeassistant.components.ffmpeg import get_ffmpeg_manager  # noqa: PLC0415
+
+    await hass.async_add_executor_job(
+        partial(os.makedirs, os.path.dirname(video_path), exist_ok=True)
+    )
+
+    # Cut on the timestamps in the video rather than on elapsed time: a recorder
+    # hands its stored footage over faster than real time, so a wall-clock cut
+    # yields a clip of an unpredictable length. Only the audio is re-encoded,
+    # because a recorder's audio codec is often one an MP4 cannot carry.
+    process = await asyncio.create_subprocess_exec(
+        get_ffmpeg_manager(hass).binary,
+        *("-nostdin", "-y", "-loglevel", "error"),
+        *("-i", url),
+        *("-t", str(duration)),
+        *("-c:v", "copy", "-c:a", "aac"),
+        *("-movflags", "+faststart"),
+        video_path,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
     try:
-        await stream.async_record(video_path, duration=duration, lookback=0)
-    finally:
-        # Nothing else consumes this stream, so let go of the recorder connection
-        # instead of waiting for it to time out.
-        await stream.stop()
+        async with asyncio.timeout(duration + FFMPEG_GRACE):
+            _stdout, stderr = await process.communicate()
+    except TimeoutError:
+        process.kill()
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="service_recording_timeout",
+            translation_placeholders={"path": video_path},
+        ) from None
+
+    if process.returncode != 0:
+        _LOGGER.error(
+            "Saving a recording of %s failed: %s",
+            host.api.camera_name(channel),
+            host.api.hide_password(stderr.decode(errors="replace").strip()),
+        )
+        raise HomeAssistantError(
+            translation_domain=DOMAIN,
+            translation_key="service_recording_failed",
+            translation_placeholders={"device_name": str(device.name)},
+        )
 
     return {
         "filename": video_path,

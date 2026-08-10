@@ -928,6 +928,15 @@
     "service_no_recording": {
       "message": "Reolink error: {device_name} has no recording covering {moment}"
     },
+    "service_path_not_allowed": {
+      "message": "Reolink error: no access to write {path}, add its directory to allowlist_external_dirs"
+    },
+    "service_recording_failed": {
+      "message": "Reolink error: saving a recording of {device_name} failed, see the log for details"
+    },
+    "service_recording_timeout": {
+      "message": "Reolink error: saving a recording to {path} took too long and was stopped"
+    },
     "subscription_error": {
       "message": "Error during ONVIF subscription: {err}"
     },
@@ -1037,7 +1046,7 @@
           "name": "Camera"
         },
         "duration": {
-          "description": "How much video to save.",
+          "description": "Length of the whole clip, the pre-roll included.",
           "name": "Duration"
         },
         "filename": {
