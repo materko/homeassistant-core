@@ -922,6 +922,12 @@
     "service_not_chime": {
       "message": "Reolink play_chime error: {device_name} is not a Chime"
     },
+    "service_not_camera": {
+      "message": "Reolink vod_link error: {device_name} is not a camera"
+    },
+    "service_no_recording": {
+      "message": "Reolink vod_link error: {device_name} has no recording covering {moment}"
+    },
     "subscription_error": {
       "message": "Error during ONVIF subscription: {err}"
     },

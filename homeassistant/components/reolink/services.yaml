@@ -17,6 +17,33 @@ ptz_move:
           max: 64
           step: 1
 
+vod_link:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          filter:
+            integration: reolink
+    timestamp:
+      selector:
+        datetime:
+    pre_roll:
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 600
+          step: 1
+          unit_of_measurement: s
+    stream:
+      default: sub
+      selector:
+        select:
+          options:
+            - sub
+            - main
+
 play_chime:
   fields:
     device_id:
