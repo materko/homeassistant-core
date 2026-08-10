@@ -53,6 +53,11 @@ SERVICE_VOD_DOWNLOAD = "vod_download"
 # without dragging in a needlessly large search.
 VOD_SEARCH_MARGIN = timedelta(hours=4)
 
+# A recorder only indexes the block it is currently writing every few minutes, so a
+# moment near the live edge reads as being past the end of a block that in fact
+# already holds the footage. Accept a block that ends this recently before the moment.
+VOD_INDEX_LAG = timedelta(minutes=15)
+
 
 @raise_translated_error
 async def _async_play_chime(service_call: ServiceCall) -> None:
@@ -158,9 +163,16 @@ async def _async_locate_recording(
         channel, search_start, moment + timedelta(seconds=1), stream=stream
     )
 
-    recording = next(
-        (file for file in files or [] if file.start_time <= moment <= file.end_time),
-        None,
+    # The block covering the moment is the latest one that started before it, whether
+    # the recorder has caught up with indexing its end or not.
+    recording = max(
+        (
+            file
+            for file in files or []
+            if file.start_time <= moment <= file.end_time + VOD_INDEX_LAG
+        ),
+        key=lambda file: file.start_time,
+        default=None,
     )
     if recording is None:
         raise ServiceValidationError(
