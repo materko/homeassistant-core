@@ -198,6 +198,52 @@ class ReolinkVODMediaSource(MediaSource):
             )
 
         # pylint: disable-next=home-assistant-exception-not-translated
+        if item_type == "FILE":
+            (
+                _,
+                config_entry_id,
+                channel_str,
+                stream,
+                _filename,
+                start_time,
+                _end_time,
+            ) = identifier
+            channel = int(channel_str)
+            host = get_host(self.hass, config_entry_id)
+
+            title = f"{host.api.camera_name(channel)} {res_name(stream)}"
+            try:
+                moment = dt.datetime.strptime(start_time, "%Y%m%d%H%M%S")
+            except ValueError:
+                pass
+            else:
+                title = f"{title} {moment.time()}"
+
+            # Reached when something links straight to one recording, which the media
+            # browser can only play as an entry in a listing - so hand back a listing
+            # holding just that recording.
+            return BrowseMediaSource(
+                domain=DOMAIN,
+                identifier=item.identifier,
+                media_class=MediaClass.DIRECTORY,
+                media_content_type=MediaType.PLAYLIST,
+                title=title,
+                can_play=False,
+                can_expand=True,
+                children_media_class=MediaClass.VIDEO,
+                children=[
+                    BrowseMediaSource(
+                        domain=DOMAIN,
+                        identifier=item.identifier,
+                        media_class=MediaClass.VIDEO,
+                        media_content_type=MediaType.VIDEO,
+                        title=title,
+                        can_play=True,
+                        can_expand=False,
+                    )
+                ],
+            )
+
         raise Unresolvable(f"Unknown media item '{item.identifier}' during browsing.")
 
     async def _async_generate_root(self) -> BrowseMediaSource:
