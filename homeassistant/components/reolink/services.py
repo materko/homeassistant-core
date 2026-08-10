@@ -4,11 +4,13 @@ from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from reolink_aio.api import Chime
-from reolink_aio.enums import ChimeToneEnum
+from reolink_aio.enums import ChimeToneEnum, VodRequestType
+from reolink_aio.typings import VOD_file
 from reolink_aio.utils import to_reolink_time_id
 import voluptuous as vol
 
 from homeassistant.components.button import DOMAIN as BUTTON_DOMAIN
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_DEVICE_ID
 from homeassistant.core import (
     HomeAssistant,
@@ -18,12 +20,21 @@ from homeassistant.core import (
     callback,
 )
 from homeassistant.exceptions import ServiceValidationError
-from homeassistant.helpers import config_validation as cv, service
-from homeassistant.util import dt as dt_util
+from homeassistant.helpers import (
+    config_validation as cv,
+    device_registry as dr,
+    service,
+)
+from homeassistant.util import dt as dt_util, slugify
 
 from .const import DOMAIN, SUPPORT_PTZ_SPEED
 from .host import ReolinkHost
-from .util import get_device_uid_and_ch, raise_translated_error
+from .util import (
+    get_device_uid_and_ch,
+    get_seek,
+    get_vod_type,
+    raise_translated_error,
+)
 
 ATTR_RINGTONE = "ringtone"
 ATTR_SPEED = "speed"
@@ -32,7 +43,10 @@ SERVICE_PTZ_MOVE = "ptz_move"
 ATTR_TIMESTAMP = "timestamp"
 ATTR_PRE_ROLL = "pre_roll"
 ATTR_STREAM = "stream"
+ATTR_DURATION = "duration"
+ATTR_FILENAME = "filename"
 SERVICE_VOD_LINK = "vod_link"
+SERVICE_VOD_DOWNLOAD = "vod_download"
 
 # How far back to look for the recording covering a moment. Continuous recording is
 # stored in blocks of roughly an hour, so a few hours of margin finds the block
@@ -63,13 +77,13 @@ async def _async_play_chime(service_call: ServiceCall) -> None:
         await chime.play(ChimeToneEnum[ringtone].value)
 
 
-@raise_translated_error
-async def _async_vod_link(service_call: ServiceCall) -> ServiceResponse:
-    """Return a link that plays the recording covering a given moment.
+async def _async_locate_recording(
+    service_call: ServiceCall,
+) -> tuple[dr.DeviceEntry, ConfigEntry, ReolinkHost, int, datetime, VOD_file]:
+    """Find the recording covering the requested moment.
 
-    Built for reaching the footage behind an alarm: the recorder holds hours of
-    continuous video, and this locates the block covering the moment and hands back
-    an identifier that starts playback there rather than at the top of the block.
+    The recorder holds hours of continuous video, so reaching the footage behind an
+    alarm means locating the block the moment falls in.
     """
     service_data = service_call.data
     device, config_entry = service.async_get_device_and_config_entry(
@@ -101,11 +115,7 @@ async def _async_vod_link(service_call: ServiceCall) -> ServiceResponse:
     )
 
     recording = next(
-        (
-            file
-            for file in files or []
-            if file.start_time <= moment <= file.end_time
-        ),
+        (file for file in files or [] if file.start_time <= moment <= file.end_time),
         None,
     )
     if recording is None:
@@ -117,6 +127,17 @@ async def _async_vod_link(service_call: ServiceCall) -> ServiceResponse:
                 "moment": moment.isoformat(timespec="seconds"),
             },
         )
+
+    return device, config_entry, host, channel, moment, recording
+
+
+@raise_translated_error
+async def _async_vod_link(service_call: ServiceCall) -> ServiceResponse:
+    """Return a link that plays the recording covering a given moment."""
+    _device, config_entry, _host, channel, moment, recording = (
+        await _async_locate_recording(service_call)
+    )
+    stream = service_call.data[ATTR_STREAM]
 
     # The media source derives the seek offset from the difference between this start
     # time and the start of the block, so naming the moment here starts playback there.
@@ -132,6 +153,60 @@ async def _async_vod_link(service_call: ServiceCall) -> ServiceResponse:
         # Ready to hand to a navigate action or a markdown link.
         "path": f"/media-browser/browser/{quote(f'video,{media_content_id}', safe='')}",
         "start": moment.isoformat(timespec="seconds"),
+        "recording_start": recording.start_time.isoformat(timespec="seconds"),
+    }
+
+
+@raise_translated_error
+async def _async_vod_download(service_call: ServiceCall) -> ServiceResponse:
+    """Copy the recording covering a given moment into Home Assistant.
+
+    Pulls the footage straight off the recorder rather than off the live stream, so
+    the clip can start before the moment that triggered it without Home Assistant
+    having to keep a preloaded stream running.
+    """
+    device, _config_entry, host, channel, moment, recording = (
+        await _async_locate_recording(service_call)
+    )
+    service_data = service_call.data
+    stream_res = service_data[ATTR_STREAM]
+    duration = service_data[ATTR_DURATION]
+
+    video_path = service_data.get(ATTR_FILENAME) or (
+        f"/media/reolink/{slugify(str(device.name))}"
+        f"/{moment.strftime('%Y-%m-%d_%H-%M-%S')}.mp4"
+    )
+
+    filename = recording.file_name
+    vod_type = get_vod_type(host, filename)
+    seek = get_seek(filename, to_reolink_time_id(moment))
+    if vod_type is VodRequestType.NVR_DOWNLOAD:
+        # This request type addresses a recording by the span it covers, not by name.
+        filename = f"{recording.start_time_id}_{recording.end_time_id}"
+
+    _mime_type, url = await host.api.get_vod_source(
+        channel, filename, stream_res, vod_type, seek
+    )
+
+    # Imported here so that setting up the integration does not pull in the stream
+    # stack, which only this service needs.
+    from homeassistant.components.camera import (  # noqa: PLC0415
+        DynamicStreamSettings,
+    )
+    from homeassistant.components.stream import create_stream  # noqa: PLC0415
+
+    stream = create_stream(service_call.hass, url, {}, DynamicStreamSettings())
+    try:
+        await stream.async_record(video_path, duration=duration, lookback=0)
+    finally:
+        # Nothing else consumes this stream, so let go of the recorder connection
+        # instead of waiting for it to time out.
+        await stream.stop()
+
+    return {
+        "filename": video_path,
+        "start": moment.isoformat(timespec="seconds"),
+        "duration": duration,
         "recording_start": recording.start_time.isoformat(timespec="seconds"),
     }
 
@@ -166,6 +241,24 @@ def async_setup_services(hass: HomeAssistant) -> None:
             }
         ),
         supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_VOD_DOWNLOAD,
+        _async_vod_download,
+        schema=vol.Schema(
+            {
+                vol.Required(ATTR_DEVICE_ID): cv.string,
+                vol.Optional(ATTR_TIMESTAMP): cv.datetime,
+                vol.Optional(ATTR_PRE_ROLL, default=0): cv.positive_int,
+                vol.Optional(ATTR_DURATION, default=30): vol.All(
+                    cv.positive_int, vol.Range(min=1, max=600)
+                ),
+                vol.Optional(ATTR_FILENAME): cv.string,
+                vol.Optional(ATTR_STREAM, default="sub"): vol.In(["sub", "main"]),
+            }
+        ),
+        supports_response=SupportsResponse.OPTIONAL,
     )
     service.async_register_platform_entity_service(
         hass,

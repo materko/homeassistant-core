@@ -22,7 +22,7 @@ from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .util import get_host
+from .util import get_host, get_seek, get_vod_type
 from .views import async_generate_playback_proxy_url
 
 _LOGGER = logging.getLogger(__name__)
@@ -75,20 +75,7 @@ class ReolinkVODMediaSource(MediaSource):
 
         host = get_host(self.hass, config_entry_id)
 
-        def get_vod_type() -> VodRequestType:
-            if host.api.is_nvr and host.api.firmware_v2:
-                # Firmware 2.x NVRs support neither the Download nor the Playback
-                # command, their recordings are only reachable over plain RTMP.
-                return VodRequestType.RTMP
-            if filename.endswith((".mp4", ".vref")) or host.api.is_hub:
-                if host.api.is_nvr:
-                    return VodRequestType.DOWNLOAD
-                return VodRequestType.PLAYBACK
-            if host.api.is_nvr:
-                return VodRequestType.NVR_DOWNLOAD
-            return VodRequestType.RTMP
-
-        vod_type = get_vod_type()
+        vod_type = get_vod_type(host, filename)
 
         if vod_type is VodRequestType.NVR_DOWNLOAD:
             filename = f"{start_time}_{end_time}"
@@ -103,22 +90,7 @@ class ReolinkVODMediaSource(MediaSource):
             )
             return PlayMedia(proxy_url, "video/mp4")
 
-        # A long recording is browsed as shorter segments that all carry the same file
-        # name, so without a seek every segment would replay the file from its start.
-        # "filename" is the file's playback time in UTC, while start_time is the
-        # segment's start in the device's local time — convert before subtracting.
-        seek = 0
-        try:
-            file_start = dt.datetime.strptime(filename, "%Y%m%d%H%M%S").replace(
-                tzinfo=dt.UTC
-            )
-            segment_start = dt.datetime.strptime(start_time, "%Y%m%d%H%M%S").replace(
-                tzinfo=dt_util.DEFAULT_TIME_ZONE
-            )
-            seek = max(0, int((segment_start - file_start).total_seconds()))
-        except ValueError:
-            # Some devices name recordings instead of timestamping them; play from the start.
-            _LOGGER.debug("Could not derive a seek offset from '%s'", filename)
+        seek = get_seek(filename, start_time)
 
         mime_type, url = await host.api.get_vod_source(
             channel, filename, stream_res, vod_type, seek

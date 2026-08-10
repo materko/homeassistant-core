@@ -2,8 +2,11 @@
 
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
+import datetime as dt
+import logging
 from typing import TYPE_CHECKING, Any
 
+from reolink_aio.enums import VodRequestType
 from reolink_aio.exceptions import (
     ApiError,
     CredentialsInvalidError,
@@ -26,12 +29,15 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.translation import async_get_exception_message
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 
 if TYPE_CHECKING:
     from .coordinator import ReolinkDeviceCoordinator, ReolinkFirmwareCoordinator
     from .host import ReolinkHost
+
+_LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 1
 
@@ -54,6 +60,44 @@ def is_connected(hass: HomeAssistant, config_entry: config_entries.ConfigEntry) 
         and config_entry.state is config_entries.ConfigEntryState.LOADED
         and config_entry.runtime_data.device_coordinator.last_update_success
     )
+
+
+def get_vod_type(host: ReolinkHost, filename: str) -> VodRequestType:
+    """Return how a recording has to be fetched from this device."""
+    if host.api.is_nvr and host.api.firmware_v2:
+        # Firmware 2.x NVRs support neither the Download nor the Playback command,
+        # their recordings are only reachable over plain RTMP.
+        return VodRequestType.RTMP
+    if filename.endswith((".mp4", ".vref")) or host.api.is_hub:
+        if host.api.is_nvr:
+            return VodRequestType.DOWNLOAD
+        return VodRequestType.PLAYBACK
+    if host.api.is_nvr:
+        return VodRequestType.NVR_DOWNLOAD
+    return VodRequestType.RTMP
+
+
+def get_seek(filename: str, start_time: str) -> int:
+    """Return how far into a recording playback should start.
+
+    A long recording is browsed as shorter segments that all carry the same file
+    name, so without a seek every segment would replay the file from its start.
+    "filename" is the file's playback time in UTC while start_time is in the device's
+    local time, so both are converted before subtracting.
+    """
+    try:
+        file_start = dt.datetime.strptime(filename, "%Y%m%d%H%M%S").replace(
+            tzinfo=dt.UTC
+        )
+        segment_start = dt.datetime.strptime(start_time, "%Y%m%d%H%M%S").replace(
+            tzinfo=dt_util.DEFAULT_TIME_ZONE
+        )
+    except ValueError:
+        # Some devices name recordings instead of timestamping them; play from the start.
+        _LOGGER.debug("Could not derive a seek offset from '%s'", filename)
+        return 0
+
+    return max(0, int((segment_start - file_start).total_seconds()))
 
 
 def get_host(hass: HomeAssistant, config_entry_id: str) -> ReolinkHost:

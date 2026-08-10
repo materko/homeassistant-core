@@ -44,6 +44,45 @@ vod_link:
             - sub
             - main
 
+vod_download:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          filter:
+            integration: reolink
+    timestamp:
+      selector:
+        datetime:
+    pre_roll:
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 600
+          step: 1
+          unit_of_measurement: s
+    duration:
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 600
+          step: 1
+          unit_of_measurement: s
+    filename:
+      example: /media/reolink/front_door/alarm.mp4
+      selector:
+        text:
+    stream:
+      default: sub
+      selector:
+        select:
+          options:
+            - sub
+            - main
+
 play_chime:
   fields:
     device_id:
