@@ -75,6 +75,10 @@ class ReolinkVODMediaSource(MediaSource):
         host = get_host(self.hass, config_entry_id)
 
         def get_vod_type() -> VodRequestType:
+            if host.api.is_nvr and host.api.firmware_v2:
+                # Firmware 2.x NVRs support neither the Download nor the Playback
+                # command, their recordings are only reachable over plain RTMP.
+                return VodRequestType.RTMP
             if filename.endswith((".mp4", ".vref")) or host.api.is_hub:
                 if host.api.is_nvr:
                     return VodRequestType.DOWNLOAD
