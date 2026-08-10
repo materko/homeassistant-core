@@ -923,10 +923,10 @@
       "message": "Reolink play_chime error: {device_name} is not a Chime"
     },
     "service_not_camera": {
-      "message": "Reolink vod_link error: {device_name} is not a camera"
+      "message": "Reolink error: {device_name} is not a camera"
     },
     "service_no_recording": {
-      "message": "Reolink vod_link error: {device_name} has no recording covering {moment}"
+      "message": "Reolink error: {device_name} has no recording covering {moment}"
     },
     "subscription_error": {
       "message": "Error during ONVIF subscription: {err}"
@@ -1028,6 +1028,58 @@
         }
       },
       "name": "PTZ move"
+    },
+    "vod_download": {
+      "description": "Saves a recording from the device to Home Assistant, starting a chosen number of seconds before a given moment.",
+      "fields": {
+        "device_id": {
+          "description": "The Reolink camera to fetch the recording from.",
+          "name": "Camera"
+        },
+        "duration": {
+          "description": "How much video to save.",
+          "name": "Duration"
+        },
+        "filename": {
+          "description": "Where to write the video. Defaults to a file named after the moment under /media/reolink.",
+          "name": "File name"
+        },
+        "pre_roll": {
+          "description": "How long before the moment the video should start.",
+          "name": "Pre-roll"
+        },
+        "stream": {
+          "description": "Which recorded stream to use.",
+          "name": "Stream"
+        },
+        "timestamp": {
+          "description": "The moment to capture. Defaults to now.",
+          "name": "Moment"
+        }
+      },
+      "name": "Download recording"
+    },
+    "vod_link": {
+      "description": "Returns a link that plays the recording covering a given moment, starting a chosen number of seconds before it.",
+      "fields": {
+        "device_id": {
+          "description": "The Reolink camera to look up the recording for.",
+          "name": "Camera"
+        },
+        "pre_roll": {
+          "description": "How long before the moment playback should start.",
+          "name": "Pre-roll"
+        },
+        "stream": {
+          "description": "Which recorded stream to use.",
+          "name": "Stream"
+        },
+        "timestamp": {
+          "description": "The moment to play from. Defaults to now.",
+          "name": "Moment"
+        }
+      },
+      "name": "Recording link"
     }
   }
 }
