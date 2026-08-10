@@ -19,6 +19,7 @@ from homeassistant.components.media_source import (
 from homeassistant.components.stream import create_stream
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .util import get_host
@@ -27,6 +28,10 @@ from .views import async_generate_playback_proxy_url
 _LOGGER = logging.getLogger(__name__)
 
 VOD_SPLIT_TIME = dt.timedelta(minutes=5)
+
+# Start streamed playback slightly before the requested moment, so whatever set the
+# alarm off is on screen from the first frame instead of already halfway through.
+VOD_PRE_ROLL = dt.timedelta(seconds=8)
 
 
 async def async_get_media_source(hass: HomeAssistant) -> ReolinkVODMediaSource:
@@ -102,8 +107,26 @@ class ReolinkVODMediaSource(MediaSource):
             )
             return PlayMedia(proxy_url, "video/mp4")
 
+        # A long recording is browsed as shorter segments that all carry the same file
+        # name, so without a seek every segment would replay the file from its start.
+        # "filename" is the file's playback time in UTC, while start_time is the
+        # segment's start in the device's local time — convert before subtracting.
+        seek = 0
+        try:
+            file_start = dt.datetime.strptime(filename, "%Y%m%d%H%M%S").replace(
+                tzinfo=dt.UTC
+            )
+            segment_start = dt.datetime.strptime(start_time, "%Y%m%d%H%M%S").replace(
+                tzinfo=dt_util.DEFAULT_TIME_ZONE
+            )
+            offset = segment_start - file_start - VOD_PRE_ROLL
+            seek = max(0, int(offset.total_seconds()))
+        except ValueError:
+            # Some devices name recordings instead of timestamping them; play from the start.
+            _LOGGER.debug("Could not derive a seek offset from '%s'", filename)
+
         mime_type, url = await host.api.get_vod_source(
-            channel, filename, stream_res, vod_type
+            channel, filename, stream_res, vod_type, seek
         )
         if _LOGGER.isEnabledFor(logging.DEBUG):
             _LOGGER.debug(
